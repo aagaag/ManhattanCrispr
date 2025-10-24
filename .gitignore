@@ -1,0 +1,50 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+env/
+.myenv/
+.mypy_cache/
+.pytest_cache/
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+.spyproject/
+
+# Data & figures (keep sample folders)
+*.xlsx~
+*.csv~
+*.tsv~
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+!example_data/
+!screenshots/
