@@ -3790,28 +3790,3 @@ KIAA1324L	HTTP 400
 [2025-10-25 10:49:15] Ignored 114 control genes.
 [2025-10-25 10:49:16] --- Fetching coordinates for 21869 genes ---
 [2025-10-25 10:49:16] CACHE-ONLY mode enabled.
-[2025-10-25 11:13:11] Ignored 114 control genes.
-[2025-10-25 11:13:11] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 11:13:11] CACHE-ONLY mode enabled.
-[2025-10-25 11:38:08] Ignored 114 control genes.
-[2025-10-25 11:38:08] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 11:38:08] CACHE-ONLY mode enabled.
-[2025-10-25 11:59:34] Ignored 114 control genes.
-[2025-10-25 11:59:34] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 11:59:34] CACHE-ONLY mode enabled.
-[2025-10-25 12:29:06] Ignored 114 control genes.
-[2025-10-25 12:29:06] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 12:29:06] CACHE-ONLY mode enabled.
-[2025-10-25 12:56:39] Ignored 114 control genes.
-[2025-10-25 12:56:39] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 12:56:39] CACHE-ONLY mode enabled.
-[2025-10-25 13:54:26] Ignored 114 control genes.
-[2025-10-25 13:54:26] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 13:54:26] CACHE-ONLY mode enabled.
-[2025-10-25 18:53:01] Ignored 114 control genes.
-[2025-10-25 18:53:01] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 18:53:01] CACHE-ONLY mode enabled.
-[2025-10-25 19:23:24] Ignored 114 control genes.
-[2025-10-25 19:23:24] --- Fetching coordinates for 21869 genes ---
-[2025-10-25 19:29:19] Ignored 114 control genes.
-[2025-10-25 19:29:19] --- Fetching coordinates for 21869 genes ---

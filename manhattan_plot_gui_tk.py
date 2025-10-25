@@ -2,17 +2,17 @@
 """
 manhattan_plot_gui_tk.py
 --------------------------------------------------
-Full-featured, thread-safe Tkinter GUI for the Manhattan Plot Generator.
+Tkinter GUI for the Manhattan Plot Generator.
 
 Features
 --------
-- Automatic dependency installer (for non-savvy users)
-- Tabbed & scrollable Advanced Settings (General, Markers, Bands, Labels, Figure, Paths)
-- Color pickers for all colors (including RGBA band colors)
-- PNG export size (default 1600×1200 px)
-- Thread-safe plotting (no Tkinter race errors)
+- Automatic dependency installer
+- Tabbed & scrollable Advanced Settings
+- Color pickers for all colors (RGBA band colors too)
+- PNG/SVG/PDF/EPS export choice
+- Separate scalable preview window
+- Thread-safe plotting (no GUI freezes)
 - Persistent settings (gui_settings.json)
-- Matplotlib toolbar, color-coded console, progress & status bars
 """
 
 # ======================================================================
@@ -27,14 +27,11 @@ required_packages = [
 ]
 
 for pkg in required_packages:
-    if pkg == "tk":  # tkinter ships with Python
+    if pkg == "tk":
         continue
     if importlib.util.find_spec(pkg) is None:
-        print(f"📦 Installing missing dependency: {pkg}")
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-        except Exception as e:
-            print(f"⚠️ Failed to install {pkg}: {e}")
+        print(f"Installing missing dependency: {pkg}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
 
 # ======================================================================
 # Imports
@@ -43,58 +40,14 @@ for pkg in required_packages:
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-import threading, sys, os, json, shutil
-
+import threading, os, json, shutil
 import manhattan_plot_core as mp
 
 SETTINGS_FILE = "gui_settings.json"
 
 # ======================================================================
-# Utility Classes
+# Helper classes
 # ======================================================================
-
-class ToolTip:
-    """Simple tooltip helper."""
-    def __init__(self, widget, text):
-        self.widget, self.text, self.tip = widget, text, None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
-
-    def _show(self, _=None):
-        if self.tip or not self.text: return
-        x, y, _, _ = self.widget.bbox("insert") or (0, 0, 0, 0)
-        x += self.widget.winfo_rootx() + 25
-        y += self.widget.winfo_rooty() + 20
-        self.tip = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(
-            tw, text=self.text, background="#ffffe0",
-            relief="solid", borderwidth=1, font=("Arial", 9)
-        ).pack(ipadx=5, ipady=2)
-
-    def _hide(self, _=None):
-        if self.tip:
-            self.tip.destroy()
-            self.tip = None
-
-
-class RedirectText:
-    """Redirect stdout/stderr to Tkinter Text widget."""
-    def __init__(self, widget): self.widget = widget
-    def write(self, s):
-        tag = None
-        if any(k in s for k in ("⚠️", "❌", "Error")): tag = "err"
-        elif any(k in s for k in ("✅", "🧬", "💾", "🚀")): tag = "ok"
-        if tag:
-            self.widget.tag_config(tag, foreground=("red" if tag == "err" else "lime"))
-            self.widget.insert(tk.END, s, tag)
-        else:
-            self.widget.insert(tk.END, s)
-        self.widget.see(tk.END)
-        self.widget.update_idletasks()
-    def flush(self): ...
-
 
 class ScrollableFrame(ttk.Frame):
     """Scrollable frame used in each settings tab."""
@@ -103,18 +56,14 @@ class ScrollableFrame(ttk.Frame):
         canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         self.scrollable_frame = ttk.Frame(canvas)
-
         self.scrollable_frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
-
         canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-
-        # Mouse wheel scrolling
         self.scrollable_frame.bind("<Enter>", lambda e: self._bind_mousewheel(canvas))
         self.scrollable_frame.bind("<Leave>", lambda e: self._unbind_mousewheel(canvas))
 
@@ -122,6 +71,17 @@ class ScrollableFrame(ttk.Frame):
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
     def _unbind_mousewheel(self, canvas):
         canvas.unbind_all("<MouseWheel>")
+
+
+class RedirectText:
+    """Redirect stdout/stderr to a Tkinter Text widget."""
+    def __init__(self, widget): self.widget = widget
+    def write(self, s):
+        self.widget.insert(tk.END, s)
+        self.widget.see(tk.END)
+        self.widget.update_idletasks()
+    def flush(self): ...
+
 
 # ======================================================================
 # Main GUI
@@ -131,7 +91,7 @@ class ManhattanGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🧬 Manhattan Plot Generator")
-        self.geometry("1320x900")
+        self.geometry("1300x900")
         self.resizable(True, True)
 
         self.vars = self._init_vars()
@@ -145,7 +105,7 @@ class ManhattanGUI(tk.Tk):
         sys.stderr = RedirectText(self.txt_log)
 
     # ------------------------------------------------------------------
-    # Initialize Tk variables
+    # Variables
     # ------------------------------------------------------------------
     def _init_vars(self):
         return {
@@ -174,6 +134,7 @@ class ManhattanGUI(tk.Tk):
             "SAVE_PATH": tk.StringVar(value=mp.SAVE_PATH),
             "PNG_W": tk.IntVar(value=1600),
             "PNG_H": tk.IntVar(value=1200),
+            "EXPORT_FORMAT": tk.StringVar(value="png"),
             "CACHE_FILE": tk.StringVar(value=mp.CACHE_FILE),
             "LOG_FILE": tk.StringVar(value=mp.LOG_FILE),
         }
@@ -190,15 +151,8 @@ class ManhattanGUI(tk.Tk):
         f.add_command(label="Exit", command=self._quit)
         m.add_cascade(label="File", menu=f)
 
-        h = tk.Menu(m, tearoff=0)
-        h.add_command(label="About", command=lambda: messagebox.showinfo(
-            "About",
-            "Manhattan Plot Generator (GUI)\n"
-            "Version 3.3 — Tabbed, scrollable, with color pickers and auto-installer."))
-        m.add_cascade(label="Help", menu=h)
-
     # ------------------------------------------------------------------
-    # Layout (including tabs)
+    # Layout
     # ------------------------------------------------------------------
     def _create_layout(self):
         top = ttk.Frame(self, padding=10); top.pack(fill=tk.X, side=tk.TOP)
@@ -206,16 +160,14 @@ class ManhattanGUI(tk.Tk):
         ttk.Entry(top, textvariable=self.vars["excel_path"], width=95).grid(row=0, column=1, padx=5)
         ttk.Button(top, text="Browse", command=self._browse_file).grid(row=0, column=2, padx=5)
 
-        ttk.Label(top, text="log2FC:").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(top, text="log2FC:").grid(row=1, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.vars["log2fc"], width=10).grid(row=1, column=1, sticky="w")
-        ttk.Label(top, text="p-value:").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Label(top, text="p-value:").grid(row=2, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.vars["pval"], width=10).grid(row=2, column=1, sticky="w")
 
         ttk.Checkbutton(top, text="Test Mode", variable=self.vars["TEST_MODE"]).grid(row=3, column=0, sticky="w")
-        ttk.Label(top, text="Test Limit:").grid(row=3, column=1, sticky="w")
-        ttk.Entry(top, textvariable=self.vars["TEST_LIMIT"], width=8).grid(row=3, column=1, sticky="e")
-        ttk.Checkbutton(top, text="Cache Only", variable=self.vars["USE_CACHE_ONLY"]).grid(row=3, column=2, sticky="w")
-        ttk.Checkbutton(top, text="Auto-Save Plot", variable=self.vars["AUTO_SAVE"]).grid(row=3, column=3, sticky="w")
+        ttk.Checkbutton(top, text="Cache Only", variable=self.vars["USE_CACHE_ONLY"]).grid(row=3, column=1, sticky="w")
+        ttk.Checkbutton(top, text="Auto-Save Plot", variable=self.vars["AUTO_SAVE"]).grid(row=3, column=2, sticky="w")
 
         nb = ttk.Notebook(self, height=300); nb.pack(fill=tk.X, padx=10, pady=6)
         tabs = {
@@ -226,7 +178,6 @@ class ManhattanGUI(tk.Tk):
             "Figure": self._tab_figure,
             "Paths": self._tab_paths
         }
-
         for name, builder in tabs.items():
             sf = ScrollableFrame(nb)
             nb.add(sf, text=name)
@@ -244,11 +195,8 @@ class ManhattanGUI(tk.Tk):
         self.txt_log = tk.Text(logf, wrap="word", height=10, bg="black", fg="white")
         self.txt_log.pack(fill=tk.BOTH, expand=True)
 
-        self.plot_frame = ttk.Frame(self, padding=10)
-        self.plot_frame.pack(fill=tk.BOTH, expand=True)
-
     # ------------------------------------------------------------------
-    # Tab content builders
+    # Tabs
     # ------------------------------------------------------------------
     def _tab_general(self, f):
         ttk.Checkbutton(f, text="Test Mode", variable=self.vars["TEST_MODE"]).grid(row=0, column=0, sticky="w")
@@ -301,15 +249,19 @@ class ManhattanGUI(tk.Tk):
         ttk.Entry(f, textvariable=self.vars["PNG_H"], width=8).grid(row=3, column=3, sticky="w")
         ttk.Label(f, text="Default 1600×1200 px").grid(row=3, column=4, sticky="w")
 
+        ttk.Label(f, text="Export format:").grid(row=4, column=0, sticky="e")
+        format_choices = ["png", "svg", "pdf", "eps"]
+        ttk.OptionMenu(f, self.vars["EXPORT_FORMAT"], self.vars["EXPORT_FORMAT"].get(), *format_choices).grid(row=4, column=1, sticky="w")
+        ttk.Label(f, text="Choose image output format").grid(row=4, column=2, columnspan=3, sticky="w")
+
     def _tab_paths(self, f):
         ttk.Label(f, text="CACHE_FILE:").grid(row=0, column=0, sticky="e")
         ttk.Entry(f, textvariable=self.vars["CACHE_FILE"], width=50).grid(row=0, column=1, sticky="w")
         ttk.Label(f, text="LOG_FILE:").grid(row=1, column=0, sticky="e")
         ttk.Entry(f, textvariable=self.vars["LOG_FILE"], width=50).grid(row=1, column=1, sticky="w")
-        ttk.Label(f, text="(No browse buttons by design)").grid(row=2, column=0, columnspan=2, sticky="w")
 
     # ------------------------------------------------------------------
-    # Color Picker Helpers
+    # Color picker helpers
     # ------------------------------------------------------------------
     def _color_row(self, f, key, label, row):
         ttk.Label(f, text=label).grid(row=row, column=0, sticky="e")
@@ -332,15 +284,13 @@ class ManhattanGUI(tk.Tk):
     # Status bar
     # ------------------------------------------------------------------
     def _create_statusbar(self):
-        ttk.Label(self, textvariable=self.status, relief=tk.SUNKEN,
-                  anchor="w", padding=5).pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(self, textvariable=self.status, relief=tk.SUNKEN, anchor="w", padding=5).pack(side=tk.BOTTOM, fill=tk.X)
 
     # ------------------------------------------------------------------
-    # File selection & settings persistence
+    # File selection & settings
     # ------------------------------------------------------------------
     def _browse_file(self):
-        p = filedialog.askopenfilename(title="Select Excel file",
-                                       filetypes=[("Excel Files","*.xlsx"),("All Files","*.*")])
+        p = filedialog.askopenfilename(title="Select Excel file", filetypes=[("Excel Files","*.xlsx"),("All Files","*.*")])
         if p:
             self.vars["excel_path"].set(p)
             self._save_settings()
@@ -379,23 +329,24 @@ class ManhattanGUI(tk.Tk):
             self._set_status("Fetching coordinates...", 10)
             df, chrom_order = mp.load_data(path)
 
-            # plot on main thread
             def make_plot():
                 self._set_status("Generating plot...", 60)
                 mp.plt.close("all")
-                fig = mp.plot_manhattan(
-                    df, chrom_order,
-                    self.vars["log2fc"].get(),
-                    self.vars["pval"].get()
-                )
+                fig = mp.plot_manhattan(df, chrom_order, self.vars["log2fc"].get(), self.vars["pval"].get())
                 self._display_plot(fig)
+
+                # Auto-save
                 if self.vars["AUTO_SAVE"].get():
-                    w_px = self.vars["PNG_W"].get()
-                    h_px = self.vars["PNG_H"].get()
-                    dpi = 100
-                    fig.set_size_inches(w_px / dpi, h_px / dpi)
-                    fig.savefig(mp.SAVE_PATH, dpi=dpi)
-                    print(f"💾 Auto-saved plot to {mp.SAVE_PATH} ({w_px}×{h_px}px)")
+                    export_fmt = self.vars["EXPORT_FORMAT"].get().lower()
+                    w_px, h_px, dpi = self.vars["PNG_W"].get(), self.vars["PNG_H"].get(), 100
+                    fig.set_size_inches(w_px/dpi, h_px/dpi)
+                    base, _ = os.path.splitext(mp.SAVE_PATH)
+                    save_path = f"{base}.{export_fmt}"
+                    if export_fmt in ("svg", "pdf", "eps"):
+                        fig.savefig(save_path, format=export_fmt)
+                    else:
+                        fig.savefig(save_path, dpi=dpi)
+                    print(f"Auto-saved plot to {save_path} ({export_fmt.upper()}, {w_px}×{h_px}px)")
                 self._set_status("Plot complete.", 100)
                 messagebox.showinfo("Success", "Manhattan plot generated successfully!")
 
@@ -403,23 +354,76 @@ class ManhattanGUI(tk.Tk):
 
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("Error", str(e)))
-            print(f"❌ Error: {e}")
         finally:
             self.after(0, lambda: self._set_status("Ready", 0))
 
     # ------------------------------------------------------------------
-    # Display plot
+    # Display plot in scalable window
     # ------------------------------------------------------------------
     def _display_plot(self, fig):
-        for w in self.plot_frame.winfo_children(): w.destroy()
-        canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
-        canvas.draw()
-        toolbar = NavigationToolbar2Tk(canvas, self.plot_frame)
+        """Show the generated plot in a new, resizable window."""
+        win = tk.Toplevel(self)
+        win.title("ManhattanCrispr_v1 — Plot Preview")
+        win.geometry("1000x800")
+        win.minsize(600, 400)
+
+        frame = ttk.Frame(win, padding=5)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        canvas = FigureCanvasTkAgg(fig, master=frame)
+        toolbar = NavigationToolbar2Tk(canvas, frame)
         toolbar.update()
+
+        canvas.draw()
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
+        def _on_close():
+            try: mp.plt.close(fig)
+            except Exception: pass
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+        win.lift()
+        win.focus_force()
+
     # ------------------------------------------------------------------
-    # Backend sync
+    # Save / Log / Quit
+    # ------------------------------------------------------------------
+    def _save_plot_as(self):
+        p = filedialog.asksaveasfilename(
+            defaultextension=f".{self.vars['EXPORT_FORMAT'].get()}",
+            filetypes=[
+                ("PNG image", "*.png"),
+                ("SVG vector", "*.svg"),
+                ("PDF document", "*.pdf"),
+                ("EPS vector", "*.eps"),
+                ("All files", "*.*")
+            ]
+        )
+        if p:
+            ext = os.path.splitext(p)[1].lower().lstrip(".")
+            w_px, h_px, dpi = self.vars["PNG_W"].get(), self.vars["PNG_H"].get(), 100
+            mp.plt.gcf().set_size_inches(w_px/dpi, h_px/dpi)
+            if ext in ("svg", "pdf", "eps"):
+                mp.plt.gcf().savefig(p, format=ext)
+            else:
+                mp.plt.gcf().savefig(p, dpi=dpi)
+            print(f"Saved plot to {p} ({ext.upper()}, {w_px}×{h_px}px)")
+
+    def _save_log_as(self):
+        if not os.path.exists(mp.LOG_FILE):
+            messagebox.showwarning("No Log","No log file found."); return
+        p = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text Files","*.txt"),("All Files","*.*")])
+        if p:
+            shutil.copy(mp.LOG_FILE, p)
+            messagebox.showinfo("Saved", f"Log file saved to:\n{p}")
+
+    def _quit(self):
+        self._save_settings()
+        self.destroy()
+
+    # ------------------------------------------------------------------
+    # Misc
     # ------------------------------------------------------------------
     def _apply_to_backend(self):
         for k,v in self.vars.items():
@@ -437,34 +441,6 @@ class ManhattanGUI(tk.Tk):
             self.after(0, lambda: self.pb.config(value=prog))
         self.update_idletasks()
 
-    # ------------------------------------------------------------------
-    # File ops & quit
-    # ------------------------------------------------------------------
-    def _save_plot_as(self):
-        if not mp.plt.get_fignums():
-            messagebox.showwarning("No Plot","No plot available to save."); return
-        p = filedialog.asksaveasfilename(defaultextension=".png",
-                                         filetypes=[("PNG","*.png"),("PDF","*.pdf"),("SVG","*.svg")])
-        if p:
-            w_px = self.vars["PNG_W"].get()
-            h_px = self.vars["PNG_H"].get()
-            dpi = 100
-            mp.plt.gcf().set_size_inches(w_px / dpi, h_px / dpi)
-            mp.plt.gcf().savefig(p, dpi=dpi)
-            print(f"💾 Plot saved to {p} ({w_px}×{h_px}px)")
-
-    def _save_log_as(self):
-        if not os.path.exists(mp.LOG_FILE):
-            messagebox.showwarning("No Log","No log file found."); return
-        p = filedialog.asksaveasfilename(defaultextension=".txt",
-                                         filetypes=[("Text Files","*.txt"),("All Files","*.*")])
-        if p:
-            shutil.copy(mp.LOG_FILE, p)
-            messagebox.showinfo("Saved", f"Log file saved to:\n{p}")
-
-    def _quit(self):
-        self._save_settings()
-        self.destroy()
 
 # ======================================================================
 # Main
