@@ -1,14 +1,13 @@
 """
 manhattan_plot_core.py
 --------------------------------------------------
-Core backend for ManhattanCrispr GUI.
+Core backend for the Manhattan Plot Generator.
 
 Responsibilities:
 - Load and validate input data
-- Fetch missing genomic coordinates from multiple sources
-- Cache and log coordinates
-- Compute chromosome layout
-- Classify hits and render Manhattan-style plot
+- Fetch genomic coordinates from multiple databases
+- Cache and log results in structured folders (/data, /log)
+- Classify hits and render Manhattan-style plots
 """
 
 import os
@@ -22,22 +21,34 @@ import time
 import mygene
 
 # ----------------------------------------------------------------------
-# Configuration
+# Folder structure setup
 # ----------------------------------------------------------------------
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+LOG_DIR = os.path.join(ROOT_DIR, "log")
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 
 CACHE_FILE = os.path.join(DATA_DIR, "gene_coordinates_cache.csv")
-LOG_FILE   = os.path.join(DATA_DIR, "coordinate_fetch_log.txt")
+LOG_FILE = os.path.join(LOG_DIR, "coordinate_fetch_log.txt")
 
+# ----------------------------------------------------------------------
+# Default parameters
+# ----------------------------------------------------------------------
 DEFAULT_LOG2FC_THRESHOLD = 0.3
 DEFAULT_PVAL_THRESHOLD = 0.03
-TEST_MODE  = False
+TEST_MODE = False
 TEST_LIMIT = 50
 USE_CACHE_ONLY = False
 
-# Colors and figure defaults
+# Database flags (controlled by GUI)
+USE_MYGENE = True
+USE_ENSEMBL = True
+USE_NCBI = True
+USE_HGNC = True
+
+# Plot styling
 MARKER_SIZE = 40
 MARKER_EDGE_ALPHA = 0.9
 NON_HIT_COLOR = "#d9d9d9"
@@ -55,197 +66,149 @@ TITLE_PADDING = 20
 SAVE_PATH = "manhattan_plot_gui.png"
 
 # ----------------------------------------------------------------------
-# Logging utility
+# Logging
 # ----------------------------------------------------------------------
 def log_write(msg: str):
-    """Append a timestamped message to the log file."""
     from datetime import datetime
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
 
 # ----------------------------------------------------------------------
-# Gene coordinate fetching
+# Coordinate fetching
 # ----------------------------------------------------------------------
 def fetch_gene_coordinates(gene_list, species="human"):
     """
-    Fetch genomic coordinates from multiple databases.
-    Search order:
-        1. Local cache (/data/gene_coordinates_cache.csv)
-        2. MyGene.info
-        3. Ensembl REST API
-        4. NCBI Entrez (E-utilities)
-        5. HGNC REST API
+    Fetch coordinates using selected databases.
+    Each gene is checked in cache first; if not found, queries selected APIs.
     """
-
     gene_list = [str(g).strip() for g in gene_list if isinstance(g, str) and g.strip()]
     if TEST_MODE and len(gene_list) > TEST_LIMIT:
         gene_list = gene_list[:TEST_LIMIT]
-        print(f"🧪 TEST_MODE: limiting fetch to first {TEST_LIMIT} genes")
+        print(f"🧪 TEST_MODE: limiting to first {TEST_LIMIT} genes")
 
     print(f"🔎 Total input genes: {len(gene_list)}")
-    log_write(f"Starting coordinate fetch for {len(gene_list)} genes")
+    log_write(f"Fetching coordinates for {len(gene_list)} genes")
 
-    # --- Load cache
     cache = pd.DataFrame(columns=["gene", "chromosome", "start_position", "end_position"])
     if os.path.exists(CACHE_FILE):
         cache = pd.read_csv(CACHE_FILE)
-    cached_genes = set(cache["gene"].astype(str))
-    missing = [g for g in gene_list if g not in cached_genes]
+    cache_genes = set(cache["gene"].astype(str))
+    coords = cache.copy()
+    missing = [g for g in gene_list if g not in cache_genes]
 
-    print(f"📂 Loaded {len(cache)} cached genes")
-    print(f"❔ Missing {len(missing)} genes not found in cache")
-    log_write(f"{len(cache)} cached, {len(missing)} missing")
+    if not missing:
+        print("✅ All genes already cached.")
+        return coords
 
     if USE_CACHE_ONLY:
-        print("💾 CACHE-ONLY mode enabled — skipping online fetches.")
-        return cache
+        print("💾 CACHE-ONLY mode enabled, skipping queries.")
+        return coords
 
-    results = []
-    errors = []
+    print(f"🧠 Databases: MyGene={USE_MYGENE}, Ensembl={USE_ENSEMBL}, NCBI={USE_NCBI}, HGNC={USE_HGNC}")
+    log_write(f"Database flags: {USE_MYGENE=}, {USE_ENSEMBL=}, {USE_NCBI=}, {USE_HGNC=}")
 
-    # --- 1️⃣ MyGene.info
-    if missing:
-        mg = mygene.MyGeneInfo()
-        try:
-            print("🔗 Querying MyGene.info ...")
-            mg_res = mg.querymany(missing, scopes="symbol", fields="genomic_pos", species=species, as_dataframe=False)
-            for entry in mg_res:
-                if "notfound" in entry and entry["notfound"]:
-                    continue
-                g = entry.get("query")
-                pos = entry.get("genomic_pos")
-                if isinstance(pos, list): pos = pos[0]
-                if isinstance(pos, dict) and all(k in pos for k in ("chr", "start", "end")):
-                    results.append({
-                        "gene": g,
-                        "chromosome": pos["chr"],
-                        "start_position": pos["start"],
-                        "end_position": pos["end"]
-                    })
-        except Exception as e:
-            log_write(f"MyGene.info query failed: {e}")
-            print(f"⚠️ MyGene.info error: {e}")
+    results, errors = [], []
+    mg = mygene.MyGeneInfo() if USE_MYGENE else None
+    headers = {"Accept": "application/json"}
 
-    # Track unresolved genes
-    found_genes = {r["gene"] for r in results}
-    still_missing = [g for g in missing if g not in found_genes]
+    for gene in tqdm(missing, desc="Fetching genes", unit="gene"):
+        record = None
 
-    # --- 2️⃣ Ensembl REST API
-    if still_missing:
-        print(f"🌐 Querying Ensembl for {len(still_missing)} remaining genes ...")
-        log_write(f"Ensembl lookup for {len(still_missing)} genes")
-        for g in tqdm(still_missing, desc="Ensembl", unit="gene"):
+        # MyGene.info
+        if USE_MYGENE and not record:
             try:
-                url = f"https://rest.ensembl.org/lookup/symbol/homo_sapiens/{g}?content-type=application/json"
+                q = mg.query(gene, scopes="symbol", fields="genomic_pos", species=species)
+                if q["hits"]:
+                    pos = q["hits"][0].get("genomic_pos")
+                    if isinstance(pos, list): pos = pos[0]
+                    if isinstance(pos, dict):
+                        record = {
+                            "gene": gene,
+                            "chromosome": pos.get("chr"),
+                            "start_position": pos.get("start"),
+                            "end_position": pos.get("end"),
+                        }
+            except Exception as e:
+                errors.append((gene, f"MyGene error: {e}"))
+
+        # Ensembl
+        if USE_ENSEMBL and not record:
+            try:
+                url = f"https://rest.ensembl.org/lookup/symbol/homo_sapiens/{gene}?content-type=application/json"
                 r = requests.get(url, timeout=8)
                 if r.ok:
                     d = r.json()
                     if "seq_region_name" in d:
-                        results.append({
-                            "gene": g,
+                        record = {
+                            "gene": gene,
                             "chromosome": str(d["seq_region_name"]),
                             "start_position": d.get("start"),
-                            "end_position": d.get("end")
-                        })
-                    else:
-                        errors.append((g, "no coordinate fields"))
-                else:
-                    errors.append((g, f"HTTP {r.status_code}"))
+                            "end_position": d.get("end"),
+                        }
             except Exception as e:
-                errors.append((g, f"Error: {e}"))
-            time.sleep(0.03)
+                errors.append((gene, f"Ensembl error: {e}"))
 
-    found_genes = {r["gene"] for r in results}
-    still_missing = [g for g in missing if g not in found_genes]
-
-    # --- 3️⃣ NCBI Entrez (E-utilities)
-    if still_missing:
-        print(f"🧬 Querying NCBI Entrez for {len(still_missing)} remaining genes ...")
-        log_write(f"NCBI Entrez lookup for {len(still_missing)} genes")
-        base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-        for g in tqdm(still_missing, desc="NCBI", unit="gene"):
+        # NCBI Entrez
+        if USE_NCBI and not record:
             try:
-                q1 = requests.get(f"{base}esearch.fcgi?db=gene&term={g}[sym]+AND+Homo+sapiens[orgn]&retmode=json", timeout=10)
-                if not q1.ok:
-                    continue
+                base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+                q1 = requests.get(f"{base}esearch.fcgi?db=gene&term={gene}[sym]+AND+Homo+sapiens[orgn]&retmode=json", timeout=10)
                 ids = q1.json().get("esearchresult", {}).get("idlist", [])
-                if not ids:
-                    errors.append((g, "no ID found"))
-                    continue
-                gene_id = ids[0]
-                q2 = requests.get(f"{base}esummary.fcgi?db=gene&id={gene_id}&retmode=json", timeout=10)
-                if not q2.ok:
-                    continue
-                doc = q2.json().get("result", {}).get(gene_id, {})
-                chr_ = doc.get("chromosome", None)
-                if not chr_:
-                    continue
-                gi = doc.get("genomicinfo")
-                if isinstance(gi, list) and gi:
-                    start, end = gi[0].get("chrstart"), gi[0].get("chrstop")
-                    results.append({
-                        "gene": g,
-                        "chromosome": str(chr_),
-                        "start_position": start,
-                        "end_position": end
-                    })
-                else:
-                    errors.append((g, "no genomicinfo"))
+                if ids:
+                    gid = ids[0]
+                    q2 = requests.get(f"{base}esummary.fcgi?db=gene&id={gid}&retmode=json", timeout=10)
+                    doc = q2.json().get("result", {}).get(gid, {})
+                    chr_ = doc.get("chromosome")
+                    gi = doc.get("genomicinfo")
+                    if chr_ and gi:
+                        start, end = gi[0].get("chrstart"), gi[0].get("chrstop")
+                        record = {
+                            "gene": gene,
+                            "chromosome": str(chr_),
+                            "start_position": start,
+                            "end_position": end,
+                        }
             except Exception as e:
-                errors.append((g, f"NCBI error: {e}"))
-            time.sleep(0.05)
+                errors.append((gene, f"NCBI error: {e}"))
 
-    found_genes = {r["gene"] for r in results}
-    still_missing = [g for g in missing if g not in found_genes]
-
-    # --- 4️⃣ HGNC fallback
-    if still_missing:
-        print(f"📘 Querying HGNC for {len(still_missing)} genes still missing ...")
-        log_write(f"HGNC fallback for {len(still_missing)} genes")
-        headers = {"Accept": "application/json"}
-        for g in tqdm(still_missing, desc="HGNC", unit="gene"):
+        # HGNC
+        if USE_HGNC and not record:
             try:
-                url = f"https://rest.genenames.org/fetch/symbol/{g}"
+                url = f"https://rest.genenames.org/fetch/symbol/{gene}"
                 r = requests.get(url, headers=headers, timeout=10)
-                if not r.ok:
-                    continue
-                docs = r.json().get("response", {}).get("docs", [])
-                if not docs:
-                    errors.append((g, "not found in HGNC"))
-                    continue
-                d = docs[0]
-                loc = d.get("location")
-                if loc:
-                    parts = loc.replace("q", "").replace("p", "").split(".")[0]
-                    results.append({
-                        "gene": g,
-                        "chromosome": str(d.get("chromosome", parts or "Unknown")),
-                        "start_position": None,
-                        "end_position": None
-                    })
+                if r.ok:
+                    docs = r.json().get("response", {}).get("docs", [])
+                    if docs:
+                        d = docs[0]
+                        record = {
+                            "gene": gene,
+                            "chromosome": str(d.get("chromosome", "Unknown")),
+                            "start_position": None,
+                            "end_position": None,
+                        }
             except Exception as e:
-                errors.append((g, f"HGNC error: {e}"))
-            time.sleep(0.05)
+                errors.append((gene, f"HGNC error: {e}"))
 
-    # --- Combine and cache
-    df_new = pd.DataFrame(results).dropna(subset=["chromosome"])
-    coords = pd.concat([cache, df_new], ignore_index=True).drop_duplicates("gene")
-    coords.to_csv(CACHE_FILE, index=False)
+        if record:
+            results.append(record)
+            coords = pd.concat([coords, pd.DataFrame([record])], ignore_index=True)
+            coords.drop_duplicates("gene", inplace=True)
+            coords.to_csv(CACHE_FILE, index=False)
+        else:
+            errors.append((gene, "not found in selected databases"))
+        time.sleep(0.05)
 
-    print(f"✅ Coordinates retrieved for {len(df_new)} new genes, total cached: {len(coords)}")
-    log_write(f"Fetched {len(df_new)} new coordinates, {len(errors)} errors")
-
+    print(f"✅ Fetched {len(results)} new, {len(errors)} unresolved.")
     if errors:
-        print(f"⚠️ {len(errors)} genes could not be mapped; see {LOG_FILE}")
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write("\n--- Missing or problematic genes ---\n")
-            for g, reason in errors:
-                f.write(f"{g}\t{reason}\n")
+            f.write("\n--- Unresolved genes ---\n")
+            for g, e in errors:
+                f.write(f"{g}\t{e}\n")
 
     return coords
 
 # ----------------------------------------------------------------------
-# Data loading and preprocessing
+# Data loading and normalization
 # ----------------------------------------------------------------------
 def normalize_column_names(columns):
     mapping = {
@@ -259,20 +222,23 @@ def normalize_column_names(columns):
         normalized.append(mapping.get(key, key))
     return normalized
 
+
 def load_data(file_path):
+    """Load Excel input, normalize column names, and fetch coordinates."""
     df = pd.read_excel(file_path)
     df.columns = normalize_column_names(df.columns)
     required = {"gene", "log2fc", "p-value"}
     if not required.issubset(df.columns):
         raise ValueError("Excel must contain: gene/gene_symbol, log2FC/log2Ratio, p-value/pValue")
 
-    # Remove control genes
+    # Drop 'control' genes
     mask = df["gene"].str.contains("control", case=False, na=False)
     n_controls = mask.sum()
-    if n_controls > 0:
-        log_write(f"Ignored {n_controls} control genes.")
+    if n_controls:
+        log_write(f"Ignored {n_controls} 'control' genes.")
         df = df[~mask]
 
+    # Fetch coordinates if missing
     if not {"chromosome", "start_position"}.issubset(df.columns):
         print("⚙️ Missing genomic coordinates — fetching automatically...")
         coords = fetch_gene_coordinates(df["gene"].tolist())
@@ -296,6 +262,7 @@ def classify_genes(df, log2fc_threshold, pval_threshold):
     non_hits = df.drop(full_hits.index).drop(partial_hits.index)
     return full_hits, partial_hits, non_hits
 
+
 def compute_chromosome_positions(df, chrom_order):
     last_base = 0
     x_labels, x_label_positions, x_bounds = [], [], []
@@ -311,6 +278,7 @@ def compute_chromosome_positions(df, chrom_order):
         last_base += n
     df["x_pos"] = np.arange(len(df))
     return df, x_labels, x_label_positions, x_bounds
+
 
 def plot_manhattan(df, chrom_order, log2fc_threshold, pval_threshold):
     df, x_labels, x_label_positions, x_bounds = compute_chromosome_positions(df, chrom_order)
@@ -331,22 +299,19 @@ def plot_manhattan(df, chrom_order, log2fc_threshold, pval_threshold):
         color = BAND_COLOR_EVEN if i % 2 == 0 else BAND_COLOR_ODD
         ax.axvspan(xmin, xmax, facecolor=color, zorder=0)
 
-    ax.scatter(non_hits["x_pos"], non_hits["log2fc"],
-               c=NON_HIT_COLOR, s=MARKER_SIZE, alpha=1.0,
-               edgecolor=EDGE_COLOR, linewidths=0.5, zorder=1)
-    ax.scatter(partial_hits["x_pos"], partial_hits["log2fc"],
-               c=PARTIAL_HIT_COLOR, s=MARKER_SIZE, alpha=0.9,
-               edgecolor=EDGE_COLOR, linewidths=0.5, zorder=2)
+    ax.scatter(non_hits["x_pos"], non_hits["log2fc"], c=NON_HIT_COLOR,
+               s=MARKER_SIZE, alpha=1.0, edgecolor=EDGE_COLOR, linewidths=0.5, zorder=1)
+    ax.scatter(partial_hits["x_pos"], partial_hits["log2fc"], c=PARTIAL_HIT_COLOR,
+               s=MARKER_SIZE, alpha=0.9, edgecolor=EDGE_COLOR, linewidths=0.5, zorder=2)
     if not full_hits.empty:
-        ax.scatter(full_hits["x_pos"], full_hits["log2fc"],
-                   c=hit_colors, s=MARKER_SIZE, alpha=MARKER_EDGE_ALPHA,
-                   edgecolor=EDGE_COLOR, linewidths=0.5, zorder=3)
+        ax.scatter(full_hits["x_pos"], full_hits["log2fc"], c=hit_colors,
+                   s=MARKER_SIZE, alpha=MARKER_EDGE_ALPHA, edgecolor=EDGE_COLOR,
+                   linewidths=0.5, zorder=3)
 
     texts = []
     for _, row in full_hits.iterrows():
         texts.append(ax.text(row["x_pos"], row["log2fc"] + LABEL_OFFSET, row["gene"],
                              fontsize=LABEL_FONT_SIZE, ha="center", va="bottom", color=LABEL_COLOR_HIT))
-
     if texts and len(texts) < 1000:
         adjust_text(texts, arrowprops=dict(arrowstyle="-", color="gray", lw=0.5))
 
